@@ -3,24 +3,31 @@ package analyzer
 import (
 	"fmt"
 	"go/ast"
-	"strconv"
-	"strings"
-	"unicode"
-	"unicode/utf8"
-
 	"go/token"
 	"go/types"
+	"strconv"
+	"strings"
 
 	"golang.org/x/tools/go/analysis"
 )
 
-var Analyzer = &analysis.Analyzer{
-	Name: "prettyloglint",
-	Doc:  "checks log messages for compliance with rules",
-	Run:  run,
+type Config struct {
+	AllowedPunctuation      string   `yaml:"allowed-punctuation"`
+	CustomSensitivePatterns []string `yaml:"custom-sensitive-patterns"`
+	IgnoreZapFields         bool     `yaml:"ignore-zap-fields"`
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func NewAnalyzer(cfg Config) *analysis.Analyzer {
+	return &analysis.Analyzer{
+		Name: "prettyloglint",
+		Doc:  "checks log messages for compliance with rules",
+		Run: func(pass *analysis.Pass) (interface{}, error) {
+			return run(pass, cfg)
+		},
+	}
+}
+
+func run(pass *analysis.Pass, cfg Config) (interface{}, error) {
 	for _, file := range pass.Files {
 		ast.Inspect(file, func(n ast.Node) bool {
 			callExpr, ok := n.(*ast.CallExpr)
@@ -34,7 +41,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			}
 
 			// Обрабатываем найденный лог-вызов в отдельной функции
-			processCall(pass, callExpr)
+			processCall(pass, callExpr, cfg)
 
 			return true
 		})
@@ -96,7 +103,7 @@ func extractMessageFromExpr(expr ast.Expr) (string, *ast.BasicLit, bool) {
 }
 
 // processCall выполняет извлечение сообщения и поочередно запускает проверки
-func processCall(pass *analysis.Pass, callExpr *ast.CallExpr) {
+func processCall(pass *analysis.Pass, callExpr *ast.CallExpr, cfg Config) {
 	if len(callExpr.Args) == 0 {
 		return
 	}
@@ -104,127 +111,65 @@ func processCall(pass *analysis.Pass, callExpr *ast.CallExpr) {
 	if !ok {
 		return
 	}
-	checkMessage(pass, callExpr, msg, bl)
+	checkMessage(pass, callExpr, msg, bl, cfg)
 	// если это zap вызов — проверяем дополнительные поля
-	if isZapCall(pass, callExpr) {
-		checkZapFields(pass, callExpr)
+	if isZapCall(pass, callExpr) && !cfg.IgnoreZapFields {
+		checkZapFields(pass, callExpr, cfg)
 	}
 }
 
 // checkMessage делегирует проверки специализированным функциям
-func checkMessage(pass *analysis.Pass, callExpr *ast.CallExpr, message string, bl *ast.BasicLit) {
+func checkMessage(pass *analysis.Pass, callExpr *ast.CallExpr, message string, bl *ast.BasicLit, cfg Config) {
 	trimmed := strings.TrimSpace(message)
 	if trimmed == "" {
 		return
 	}
 
-	// 1. Начало с строчной буквы
-	checkStartWithLowercase(pass, callExpr, trimmed, bl)
-
-	// 2. Только английский (латиница)
-	checkEnglishOnly(pass, callExpr, trimmed, bl)
-
-	// 4. Проверка на потенциально чувствительные данных по ключевым словам
-	if checkSensitiveKeys(pass, callExpr, trimmed, bl) {
-		return
-	}
-
-	// 3. Запрет спецсимволов и эмодзи
-	checkDisallowedSymbols(pass, callExpr, trimmed, bl)
-}
-
-func checkStartWithLowercase(pass *analysis.Pass, callExpr *ast.CallExpr, trimmed string, bl *ast.BasicLit) {
-	r, _ := utf8.DecodeRuneInString(trimmed)
-	if unicode.IsLetter(r) && unicode.IsUpper(r) {
-		msg := "log message should start with a lowercase letter: %q"
-		// предложенный фикс: сделать первую букву строчной если возможно
+	if ok, newMessage := checkStartWithLowercase(trimmed); ok {
 		if bl != nil {
-			newFirst := string(unicode.ToLower(r))
-			rest := trimmed[utf8.RuneLen(r):]
-			newContent := newFirst + rest
-			fix := createReplaceLiteralFix(bl, newContent, "make first letter lowercase")
+			fix := createReplaceLiteralFix(bl, newMessage, "make first letter lowercase")
 			pass.Report(analysis.Diagnostic{
 				Pos:            callExpr.Pos(),
 				End:            callExpr.End(),
-				Message:        fmtMessage(msg, trimmed),
+				Message:        fmt.Sprintf("log message should start with a lowercase letter: %q", trimmed),
 				SuggestedFixes: []analysis.SuggestedFix{fix},
 			})
 			return
 		}
-		pass.Reportf(callExpr.Pos(), msg, trimmed)
+		pass.Reportf(callExpr.Pos(), "log message should start with a lowercase letter: %q", trimmed)
 	}
-}
 
-func checkEnglishOnly(pass *analysis.Pass, callExpr *ast.CallExpr, trimmed string, bl *ast.BasicLit) {
-	for _, ch := range trimmed {
-		if unicode.IsLetter(ch) && !unicode.In(ch, unicode.Latin) {
-			msg := "log message should contain only English letters (no non-Latin scripts): %q"
-			if bl != nil {
-				newLit := sanitizeToEnglish(trimmed)
-				fix := createReplaceLiteralFix(bl, newLit, "remove non-Latin characters")
-				pass.Report(analysis.Diagnostic{
-					Pos:            callExpr.Pos(),
-					End:            callExpr.End(),
-					Message:        fmtMessage(msg, trimmed),
-					SuggestedFixes: []analysis.SuggestedFix{fix},
-				})
-				return
-			}
-			pass.Reportf(callExpr.Pos(), msg, trimmed)
+	if ok, newMessage := checkEnglishOnly(trimmed, cfg); ok {
+		if bl != nil {
+			fix := createReplaceLiteralFix(bl, newMessage, "remove non-Latin characters")
+			pass.Report(analysis.Diagnostic{
+				Pos:            callExpr.Pos(),
+				End:            callExpr.End(),
+				Message:        fmt.Sprintf("log message should contain only English letters (no non-Latin scripts): %q", trimmed),
+				SuggestedFixes: []analysis.SuggestedFix{fix},
+			})
 			return
 		}
+		pass.Reportf(callExpr.Pos(), "log message should contain only English letters (no non-Latin scripts): %q", trimmed)
 	}
-}
 
-func checkSensitiveKeys(pass *analysis.Pass, callExpr *ast.CallExpr, trimmed string, bl *ast.BasicLit) bool {
-	sensitive := []string{
-		"password", "passwd", "pass", "api_key", "apikey", "api key", "api-key",
-		"token", "secret", "ssn", "credit", "card", "cardnumber", "private key", "private_key",
+	if ok, sensitive := checkSensitiveKeys(trimmed, cfg); ok {
+		pass.Reportf(callExpr.Pos(), "log message may contain sensitive data (found %q): %q", sensitive, trimmed)
+		return
 	}
-	low := strings.ToLower(trimmed)
-	for _, kw := range sensitive {
-		if strings.Contains(low, kw) {
-			msg := "log message may contain sensitive data (found %q): %q"
-			if bl != nil {
-				pass.Report(analysis.Diagnostic{
-					Pos:     callExpr.Pos(),
-					End:     callExpr.End(),
-					Message: fmtMessage(msg, kw, trimmed),
-				})
-				return true
-			}
-			pass.Reportf(callExpr.Pos(), msg, kw, trimmed)
-			return true
-		}
-	}
-	return false
-}
 
-func checkDisallowedSymbols(pass *analysis.Pass, callExpr *ast.CallExpr, trimmed string, bl *ast.BasicLit) {
-	for _, ch := range trimmed {
-		if unicode.IsLetter(ch) || unicode.IsDigit(ch) {
-			continue
-		}
-		if isAllowedPunctuation(ch) {
-			continue
-		}
-		// запрещаем управляющие символы, символы и метки (часто эмодзи)
-		if unicode.IsControl(ch) || unicode.IsSymbol(ch) || unicode.IsMark(ch) || unicode.IsPunct(ch) {
-			msg := "log message contains disallowed symbol or emoji: %q"
-			if bl != nil {
-				newLit := sanitizeRemoveDisallowed(trimmed)
-				fix := createReplaceLiteralFix(bl, newLit, "remove disallowed symbols")
-				pass.Report(analysis.Diagnostic{
-					Pos:            callExpr.Pos(),
-					End:            callExpr.End(),
-					Message:        fmtMessage(msg, string(ch)),
-					SuggestedFixes: []analysis.SuggestedFix{fix},
-				})
-				return
-			}
-			pass.Reportf(callExpr.Pos(), msg, string(ch))
+	if ok, symbol := checkDisallowedSymbols(trimmed, cfg); ok {
+		if bl != nil {
+			fix := createReplaceLiteralFix(bl, strings.ReplaceAll(trimmed, symbol, ""), "remove disallowed symbols")
+			pass.Report(analysis.Diagnostic{
+				Pos:            callExpr.Pos(),
+				End:            callExpr.End(),
+				Message:        fmt.Sprintf("log message contains disallowed symbol or emoji: %q", symbol),
+				SuggestedFixes: []analysis.SuggestedFix{fix},
+			})
 			return
 		}
+		pass.Reportf(callExpr.Pos(), "log message contains disallowed symbol or emoji: %q", symbol)
 	}
 }
 
@@ -235,36 +180,6 @@ func createReplaceLiteralFix(bl *ast.BasicLit, newContent string, message string
 		Message:   message,
 		TextEdits: []analysis.TextEdit{{Pos: bl.Pos(), End: bl.End(), NewText: []byte(quoted)}},
 	}
-}
-
-func sanitizeToEnglish(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if unicode.IsLetter(r) {
-			if unicode.In(r, unicode.Latin) {
-				b.WriteRune(r)
-			}
-			continue
-		}
-		if unicode.IsDigit(r) || isAllowedPunctuation(r) || r == ' ' {
-			b.WriteRune(r)
-		}
-	}
-	return strings.TrimSpace(b.String())
-}
-
-func sanitizeRemoveDisallowed(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || isAllowedPunctuation(r) || r == ' ' {
-			b.WriteRune(r)
-		}
-	}
-	return strings.TrimSpace(b.String())
-}
-
-func fmtMessage(format string, args ...interface{}) string {
-	return fmt.Sprintf(format, args...)
 }
 
 var allowedPunctuation = map[rune]bool{
@@ -341,7 +256,7 @@ func isZapCall(pass *analysis.Pass, callExpr *ast.CallExpr) bool {
 }
 
 // checkZapFields просматривает дополнительные аргументы zap (поля) и проверяет ключи на чувствительные слова
-func checkZapFields(pass *analysis.Pass, callExpr *ast.CallExpr) {
+func checkZapFields(pass *analysis.Pass, callExpr *ast.CallExpr, cfg Config) {
 	// пропускаем первый аргумент (сообщение)
 	for i := 1; i < len(callExpr.Args); i++ {
 		arg := callExpr.Args[i]
@@ -361,7 +276,7 @@ func checkZapFields(pass *analysis.Pass, callExpr *ast.CallExpr) {
 											key = strings.Trim(bl.Value, "\"`")
 										}
 										// проверяем ключ на чувствительные слова
-										checkSensitiveKeyLiteral(pass, innerCall.Pos(), key)
+										checkSensitiveKeyLiteral(pass, innerCall.Pos(), key, cfg)
 									}
 								}
 							}
@@ -373,16 +288,14 @@ func checkZapFields(pass *analysis.Pass, callExpr *ast.CallExpr) {
 	}
 }
 
-func checkSensitiveKeyLiteral(pass *analysis.Pass, pos token.Pos, key string) {
-	low := strings.ToLower(key)
-	sensitive := []string{
-		"password", "passwd", "pass", "api_key", "apikey", "api key", "api-key",
-		"token", "secret", "ssn", "credit", "card", "cardnumber", "private key", "private_key",
-	}
-	for _, kw := range sensitive {
-		if strings.Contains(low, kw) {
-			pass.Reportf(pos, "log message may contain sensitive data (found %q): %q", kw, key)
-			return
-		}
+func checkSensitiveKeyLiteral(pass *analysis.Pass, pos token.Pos, key string, cfg Config) {
+	if ok, sensitive := checkSensitiveKeys(key, cfg); ok {
+		pass.Reportf(pos, "log message may contain sensitive data (found %q): %q", sensitive, key)
 	}
 }
+
+var Analyzer = NewAnalyzer(Config{
+	AllowedPunctuation:      ",-/:()",
+	CustomSensitivePatterns: []string{},
+	IgnoreZapFields:         false,
+})
