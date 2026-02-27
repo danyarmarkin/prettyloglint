@@ -43,24 +43,25 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git remote set-url origin https://x-access-token:${{ secrets.RELEASE_TOKEN }}@github.com/danyarmarkin/prettyloglint.git
 
-      - name: Get latest tag
-        id: get_latest_tag
+      - name: Get next tag
+        id: get_next_tag
         run: |
-          latest_tag=$(git tag --sort=-version:refname | grep '^v1\.' | head -1)
+          latest_tag=$(git tag --list "v1.*.0" --sort=-version:refname | head -n 1)
           if [ -z "$latest_tag" ]; then
-            echo "version=1.0.0" >> $GITHUB_OUTPUT
+            next_tag="v1.0.0"
           else
-            version=$(echo $latest_tag | sed 's/v1\.//' | sed 's/\.0$//')
-            next_version=$((version + 1))
-            echo "version=$next_version.0" >> $GITHUB_OUTPUT
+            current_x=$(echo "$latest_tag" | sed -E 's/v1\.([0-9]+)\.0/\1/')
+            next_x=$((current_x + 1))
+            next_tag="v1.${next_x}.0"
           fi
+          echo "tag=$next_tag" >> $GITHUB_OUTPUT
 
       - name: Create tag
         run: |
-          git tag v1.${{ steps.get_latest_tag.outputs.version }}
-          git push origin v1.${{ steps.get_latest_tag.outputs.version }}
+          git tag ${{ steps.get_next_tag.outputs.tag }}
+          git push origin ${{ steps.get_next_tag.outputs.tag }}
 
       - name: Create release
-        run: gh release create v1.${{ steps.get_latest_tag.outputs.version }} --generate-notes
+        run: gh release create ${{ steps.get_next_tag.outputs.tag }} --generate-notes
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
