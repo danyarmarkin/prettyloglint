@@ -1,5 +1,5 @@
-version: v1.64.5
+version: ${GOLANGCI-LINT_VERSION}
 plugins:
   - module: "github.com/danyarmarkin/prettyloglint"
     import: "github.com/danyarmarkin/prettyloglint/plugin"
-    version: latest
+    version: ${VERSION}
