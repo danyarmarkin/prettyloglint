@@ -35,12 +35,10 @@ func run(pass *analysis.Pass, cfg Config) (interface{}, error) {
 				return true
 			}
 
-			// Проверяем, является ли вызов логгированием
 			if !isLoggingCall(pass, callExpr) {
 				return true
 			}
 
-			// Обрабатываем найденный лог-вызов в отдельной функции
 			processCall(pass, callExpr, cfg)
 
 			return true
@@ -67,16 +65,13 @@ func extractMessageFromExpr(expr ast.Expr) (string, *ast.BasicLit, bool) {
 		}
 		return "", nil, false
 	case *ast.BinaryExpr:
-		// поддерживаем только +
 		if e.Op == token.ADD {
 			left, lbl, lok := extractMessageFromExpr(e.X)
 			right, rbl, rok := extractMessageFromExpr(e.Y)
-			// если обе стороны строковые литералы — соединяем
 			if lok && rok {
 				// в случае двух литералов выбираем левый как целевой для фикса
 				return left + right, lbl, true
 			}
-			// если левая часть — литерал, возвращаем её (для проверки начала или наличия ключевого слова)
 			if lok {
 				return left, lbl, true
 			}
@@ -86,7 +81,6 @@ func extractMessageFromExpr(expr ast.Expr) (string, *ast.BasicLit, bool) {
 		}
 		return "", nil, false
 	case *ast.CallExpr:
-		// поддержка fmt.Sprintf и подобных: берем первый аргумент если он строковый литерал
 		if len(e.Args) > 0 {
 			if bl, ok := e.Args[0].(*ast.BasicLit); ok && bl.Kind == token.STRING {
 				s, err := strconv.Unquote(bl.Value)
@@ -102,7 +96,6 @@ func extractMessageFromExpr(expr ast.Expr) (string, *ast.BasicLit, bool) {
 	}
 }
 
-// processCall выполняет извлечение сообщения и поочередно запускает проверки
 func processCall(pass *analysis.Pass, callExpr *ast.CallExpr, cfg Config) {
 	if len(callExpr.Args) == 0 {
 		return
@@ -112,13 +105,11 @@ func processCall(pass *analysis.Pass, callExpr *ast.CallExpr, cfg Config) {
 		return
 	}
 	checkMessage(pass, callExpr, msg, bl, cfg)
-	// если это zap вызов — проверяем дополнительные поля
 	if isZapCall(pass, callExpr) && !cfg.IgnoreZapFields {
 		checkZapFields(pass, callExpr, cfg)
 	}
 }
 
-// checkMessage делегирует проверки специализированным функциям
 func checkMessage(pass *analysis.Pass, callExpr *ast.CallExpr, message string, bl *ast.BasicLit, cfg Config) {
 	trimmed := strings.TrimSpace(message)
 	if trimmed == "" {
@@ -173,7 +164,6 @@ func checkMessage(pass *analysis.Pass, callExpr *ast.CallExpr, message string, b
 	}
 }
 
-// helpers for fixes and sanitizing
 func createReplaceLiteralFix(bl *ast.BasicLit, newContent string, message string) analysis.SuggestedFix {
 	quoted := strconv.Quote(newContent)
 	return analysis.SuggestedFix{
@@ -188,19 +178,12 @@ var allowedPunctuation = map[rune]bool{
 	'(': true, ')': true,
 }
 
-func isAllowedPunctuation(ch rune) bool {
-	return allowedPunctuation[ch]
-}
-
 var allowedLoggerPackages = map[string]struct{}{
 	"log/slog":        {},
 	"go.uber.org/zap": {},
 }
 
-// packagePathOfExpr пытается определить путь пакета для выражения X в селекторе (например, для zap.Info — "go.uber.org/zap").
-// Возвращает путь и true, если удалось определить.
 func packagePathOfExpr(pass *analysis.Pass, expr ast.Expr) (string, bool) {
-	// случай: идентификатор пакета, например zap.Info или slog.Info
 	if ident, ok := expr.(*ast.Ident); ok {
 		if obj := pass.TypesInfo.Uses[ident]; obj != nil {
 			if pkgName, ok := obj.(*types.PkgName); ok {
@@ -208,10 +191,7 @@ func packagePathOfExpr(pass *analysis.Pass, expr ast.Expr) (string, bool) {
 			}
 		}
 	}
-
-	// случай: переменная-логгер — определить по типу
 	if typ := pass.TypesInfo.TypeOf(expr); typ != nil {
-		// разыменовываем указатель
 		if ptr, ok := typ.(*types.Pointer); ok {
 			typ = ptr.Elem()
 		}
@@ -235,7 +215,6 @@ func isLoggingCall(pass *analysis.Pass, callExpr *ast.CallExpr) bool {
 			return false
 		}
 
-		// пытаемся определить путь пакета/типа для X
 		if path, ok := packagePathOfExpr(pass, selExpr.X); ok {
 			if _, ok := allowedLoggerPackages[path]; ok {
 				return true
@@ -245,7 +224,6 @@ func isLoggingCall(pass *analysis.Pass, callExpr *ast.CallExpr) bool {
 	return false
 }
 
-// проверяет, является ли вызов вызовом zap.Logger (по импортируемому пакету или типу)
 func isZapCall(pass *analysis.Pass, callExpr *ast.CallExpr) bool {
 	if selExpr, ok := callExpr.Fun.(*ast.SelectorExpr); ok {
 		if path, ok := packagePathOfExpr(pass, selExpr.X); ok {
