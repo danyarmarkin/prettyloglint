@@ -1,7 +1,7 @@
 package main
 
 import (
-	"prettyloglint/internal/analyzer"
+	"github.com/danyarmarkin/prettyloglint/internal/analyzer"
 
 	"golang.org/x/tools/go/analysis"
 )

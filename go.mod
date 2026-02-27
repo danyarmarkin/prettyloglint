@@ -1,4 +1,4 @@
-module prettyloglint
+module github.com/danyarmarkin/prettyloglint
 
 go 1.24.0
 

@@ -5,7 +5,7 @@ import (
 
 	"golang.org/x/tools/go/analysis/analysistest"
 
-	"prettyloglint/internal/analyzer"
+	"github.com/danyarmarkin/prettyloglint/internal/analyzer"
 )
 
 func TestAnalyzerSimple(t *testing.T) {
