@@ -1,1 +1,5 @@
 version: v1.64.5
+plugins:
+  - module: "github.com/danyarmarkin/prettyloglint"
+    import: "github.com/danyarmarkin/prettyloglint/plugin"
+    version: latest
