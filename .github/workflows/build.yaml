@@ -37,6 +37,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Configure git for token
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin https://x-access-token:${{ secrets.RELEASE_TOKEN }}@github.com/danyarmarkin/prettyloglint.git
+
       - name: Get latest tag
         id: get_latest_tag
         run: |
@@ -51,13 +57,10 @@ jobs:
 
       - name: Create tag
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git tag v1.${{ steps.get_latest_tag.outputs.version }}
           git push origin v1.${{ steps.get_latest_tag.outputs.version }}
 
       - name: Create release
         run: gh release create v1.${{ steps.get_latest_tag.outputs.version }} --generate-notes
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
